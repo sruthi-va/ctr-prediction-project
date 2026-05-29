@@ -6,10 +6,12 @@
 # - Behavioral + contextual feature engineering
 # - Logistic Regression baseline
 # - Gradient Boosting model with tuning
+# - XGBoost model
 # - Neural Network with TensorFlow
 # - ROC-AUC / Log Loss / Precision-Recall evaluation
 # - Ad ranking pipeline (Top-N recommendations per user)
 # - Experiment tracking table
+# - Feature importance visualization
 # - Model persistence
 # ============================================================
 
@@ -18,18 +20,26 @@ import pandas as pd
 import random
 import joblib
 import tensorflow as tf
+import matplotlib.pyplot as plt
 
-from sklearn.model_selection import train_test_split
+from xgboost import XGBClassifier
+
+from sklearn.model_selection import (
+    train_test_split,
+    RandomizedSearchCV
+)
+
 from sklearn.preprocessing import StandardScaler
+
 from sklearn.metrics import (
     roc_auc_score,
     log_loss,
     precision_recall_curve,
     auc
 )
+
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.model_selection import RandomizedSearchCV
 
 # ============================================================
 # Reproducibility
@@ -77,7 +87,7 @@ data = pd.DataFrame({
     "user_id": np.random.randint(1000, 50000, N_SAMPLES),
     "ad_id": np.random.randint(100, 1000, N_SAMPLES),
 
-    # Behavioral features
+    # Behavioral Features
     "session_frequency": np.random.poisson(5, N_SAMPLES),
     "weekly_sessions": np.random.poisson(10, N_SAMPLES),
     "pages_viewed": np.random.poisson(8, N_SAMPLES),
@@ -87,14 +97,14 @@ data = pd.DataFrame({
     "scroll_depth": np.random.uniform(0.2, 1.0, N_SAMPLES),
     "cart_additions": np.random.poisson(2, N_SAMPLES),
 
-    # Contextual features
+    # Contextual Features
     "hour_of_day": np.random.randint(0, 24, N_SAMPLES),
     "weekday": np.random.randint(0, 7, N_SAMPLES),
     "ad_position": np.random.randint(1, 6, N_SAMPLES),
     "device_type": np.random.choice(devices, N_SAMPLES),
     "traffic_source": np.random.choice(traffic_sources, N_SAMPLES),
 
-    # User/ad interests
+    # User/Ad Interests
     "user_interest": np.random.choice(user_interests, N_SAMPLES),
     "ad_category": np.random.choice(ad_categories, N_SAMPLES),
 
@@ -111,7 +121,7 @@ data["interest_match"] = (
     data["user_interest"] == data["ad_category"]
 ).astype(int)
 
-# Interaction features
+# Interaction feature
 data["engagement_x_ctr"] = (
     data["engagement_score"] * data["past_click_rate"]
 )
@@ -138,13 +148,13 @@ logits = (
     + 0.30 * data["scroll_depth"]
 )
 
-# Add randomness/noise
+# Add noise
 logits += np.random.normal(0, 2, N_SAMPLES)
 
 # Sigmoid transformation
 probabilities = 1 / (1 + np.exp(-0.08 * logits))
 
-# Binary click target
+# Binary target
 data["clicked"] = np.random.binomial(1, probabilities)
 
 # ============================================================
@@ -210,7 +220,7 @@ print("AUC:", round(lr_auc, 4))
 print("Log Loss:", round(lr_logloss, 4))
 
 # ============================================================
-# Gradient Boosting + Hyperparameter Tuning
+# Gradient Boosting
 # ============================================================
 
 print("\n==============================")
@@ -247,6 +257,35 @@ print("AUC:", round(gb_auc, 4))
 print("Log Loss:", round(gb_logloss, 4))
 
 # ============================================================
+# XGBoost Model
+# ============================================================
+
+print("\n==============================")
+print("Training XGBoost")
+print("==============================")
+
+xgb_model = XGBClassifier(
+    n_estimators=200,
+    max_depth=6,
+    learning_rate=0.05,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    objective="binary:logistic",
+    eval_metric="logloss",
+    random_state=42
+)
+
+xgb_model.fit(X_train, y_train)
+
+xgb_preds = xgb_model.predict_proba(X_test)[:, 1]
+
+xgb_auc = roc_auc_score(y_test, xgb_preds)
+xgb_logloss = log_loss(y_test, xgb_preds)
+
+print("AUC:", round(xgb_auc, 4))
+print("Log Loss:", round(xgb_logloss, 4))
+
+# ============================================================
 # Neural Network
 # ============================================================
 
@@ -260,12 +299,14 @@ nn_model = tf.keras.Sequential([
         activation="relu",
         input_shape=(X_train_scaled.shape[1],)
     ),
+
     tf.keras.layers.Dropout(0.3),
 
     tf.keras.layers.Dense(
         64,
         activation="relu"
     ),
+
     tf.keras.layers.Dropout(0.2),
 
     tf.keras.layers.Dense(
@@ -280,12 +321,18 @@ nn_model.compile(
     metrics=["AUC"]
 )
 
+early_stopping = tf.keras.callbacks.EarlyStopping(
+    patience=2,
+    restore_best_weights=True
+)
+
 nn_model.fit(
     X_train_scaled,
     y_train,
-    epochs=5,
+    epochs=10,
     batch_size=256,
     validation_split=0.1,
+    callbacks=[early_stopping],
     verbose=1
 )
 
@@ -303,7 +350,7 @@ print("Log Loss:", round(nn_logloss, 4))
 
 precision, recall, _ = precision_recall_curve(
     y_test,
-    gb_preds
+    xgb_preds
 )
 
 pr_auc = auc(recall, precision)
@@ -321,16 +368,19 @@ results = pd.DataFrame({
     "Model": [
         "Logistic Regression",
         "Gradient Boosting",
+        "XGBoost",
         "Neural Network"
     ],
     "ROC_AUC": [
         lr_auc,
         gb_auc,
+        xgb_auc,
         nn_auc
     ],
     "Log_Loss": [
         lr_logloss,
         gb_logloss,
+        xgb_logloss,
         nn_logloss
     ]
 })
@@ -340,14 +390,64 @@ print("Experiment Results")
 print("==============================")
 print(results)
 
+# Save experiment results
+results.to_csv(
+    "experiment_results.csv",
+    index=False
+)
+
 # ============================================================
 # Save Best Model
 # ============================================================
 
-joblib.dump(gb_model, "best_ctr_model.pkl")
+model_scores = {
+    "GradientBoosting": (gb_model, gb_auc),
+    "XGBoost": (xgb_model, xgb_auc)
+}
+
+best_model_name = max(
+    model_scores,
+    key=lambda x: model_scores[x][1]
+)
+
+best_model = model_scores[best_model_name][0]
+
+joblib.dump(best_model, "best_ctr_model.pkl")
 joblib.dump(scaler, "feature_scaler.pkl")
 
-print("\nSaved best model and scaler.")
+# Save neural network separately
+nn_model.save("ctr_nn_model.keras")
+
+print(f"\nSaved best model: {best_model_name}")
+
+# ============================================================
+# Feature Importance Visualization
+# ============================================================
+
+importance_df = pd.DataFrame({
+    "feature": X.columns,
+    "importance": xgb_model.feature_importances_
+})
+
+importance_df = importance_df.sort_values(
+    by="importance",
+    ascending=False
+).head(15)
+
+plt.figure(figsize=(10, 6))
+
+plt.barh(
+    importance_df["feature"],
+    importance_df["importance"]
+)
+
+plt.gca().invert_yaxis()
+
+plt.title("Top XGBoost Feature Importances")
+plt.xlabel("Importance Score")
+
+plt.tight_layout()
+plt.show()
 
 # ============================================================
 # Recommendation Ranking Pipeline
@@ -359,7 +459,7 @@ print("==============================")
 
 recommendation_df = X_test.copy()
 
-recommendation_df["predicted_ctr"] = gb_preds
+recommendation_df["predicted_ctr"] = xgb_preds
 recommendation_df["user_id"] = X_test["user_id"]
 recommendation_df["ad_id"] = X_test["ad_id"]
 
